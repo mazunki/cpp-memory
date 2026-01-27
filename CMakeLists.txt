@@ -1,5 +1,8 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.31.6)
 project(cpp_memory LANGUAGES CXX)
+
+set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,4 +23,6 @@ target_compile_options(cpp_memory PRIVATE
 target_link_options(cpp_memory PRIVATE
   $<$<CONFIG:Debug>:-fsanitize=address,undefined>
 )
+
+install(TARGETS cpp_memory)
 
