@@ -1,9 +1,10 @@
 #pragma once
-
+#include <memory_resource>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <new>
+#include <print>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -45,6 +46,29 @@ public:
 
     // initial free block = whole pool
     push_free(pool_base_, max_order_);
+  }
+
+  void dump_state() const noexcept {
+    std::println("buddy:");
+    std::println("  cfg.region:   [{:#x}, {:#x}) ({} bytes)",
+                 cfg_.region.start, cfg_.region.end,
+                 static_cast<std::size_t>(cfg_.region.end - cfg_.region.start));
+    std::println("  overbooking:  {}", cfg_.overbooking);
+
+    std::println("  min_block:    {}", bcfg_.min_block);
+    std::println("  pool_base:    {:#x}", pool_base_);
+    std::println("  pool_end:     {:#x}", pool_end_);
+    std::println("  pool_size:    {} bytes (2^{})", pool_size_, max_order_);
+    std::println("  min_order:    {}", min_order_);
+    std::println("  max_order:    {}", max_order_);
+  }
+
+  uintptr_t malloc(size_t bytes) {
+    return reinterpret_cast<uintptr_t>(this->strat_allocate(bytes, alignof(max_align_t)));
+  }
+
+  void free(uintptr_t addr, size_t bytes) {
+    this->strat_deallocate(addr, bytes, alignof(max_align_t));
   }
 
 protected:
