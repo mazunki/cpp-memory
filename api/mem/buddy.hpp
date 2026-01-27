@@ -26,23 +26,47 @@ public:
       throw std::invalid_argument("buddy min_block must be a power of two");
     }
 
-    pool_base_ = align_up(cfg_.region.start, bcfg_.min_block);
-    if (pool_base_ >= cfg_.region.end) {
+    resource_base_ = cfg_.region.start;
+    if (resource_base_ >= cfg_.region.end) {
       throw std::bad_alloc();
     }
 
-    const std::size_t avail = static_cast<std::size_t>(cfg_.region.end - pool_base_);
+    const std::size_t total_avail = static_cast<std::size_t>(cfg_.region.end - resource_base_);
+    const std::size_t provisional = std::bit_floor(total_avail);  // how many buds at max?
+    if (provisional < bcfg_.min_block) {
+      throw std::bad_alloc();
+    }
+
+    // these are provisional because the freelist might offset them slightly
+    const int provisional_min_order_ = order_for(0);
+    const int provisional_max_order_ = order_for(provisional);
+    const int provisional_orders_ = static_cast<std::size_t>((provisional_max_order_ - provisional_min_order_) + 1);
+
+    // this freelist is placed before the buddy tree
+    free_ = reinterpret_cast<FreeNode**>(resource_base_);
+    const std::size_t freelist_size = provisional_orders_ * sizeof(FreeNode*);
+
+    // the pool's (i.e. the colletion of buds) base starts after the buddy's metadata
+    pool_base_ = align_up(resource_base_ + freelist_size, bcfg_.min_block);
+    if (pool_base_ >= cfg_.region.end) {
+      throw std::bad_alloc();  // metadata took too much space
+    }
+
+    std::size_t avail = static_cast<std::size_t>(cfg_.region.end - pool_base_);
     pool_size_ = std::bit_floor(avail);
     if (pool_size_ < bcfg_.min_block) {
-      throw std::bad_alloc();
+      throw std::bad_alloc();  // can't even fit one bud in remaining space
     }
-
-    pool_end_ = pool_base_ + pool_size_;
 
     min_order_ = order_for(0);
     max_order_ = order_for(pool_size_);
+    orders_ = static_cast<std::size_t>((max_order_ - min_order_) + 1);
 
-    free_.assign((max_order_ - min_order_) + 1, nullptr);
+    pool_end_ = pool_base_ + pool_size_;
+
+    for (std::size_t i = 0; i < orders_; ++i) {
+      free_[i] = nullptr;
+    }
 
     // initial free block = whole pool
     push_free(pool_base_, max_order_);
@@ -56,7 +80,7 @@ public:
     std::println("  overbooking:  {}", cfg_.overbooking);
 
     std::println("  min_block:    {}", bcfg_.min_block);
-    std::println("  pool_base:    {:#x}", pool_base_);
+    std::println("  pool_base:    {:#x}", resource_base_);
     std::println("  pool_end:     {:#x}", pool_end_);
     std::println("  pool_size:    {} bytes (2^{})", pool_size_, max_order_);
     std::println("  min_order:    {}", min_order_);
@@ -113,7 +137,7 @@ protected:
   void strat_deallocate(std::uintptr_t addr, std::size_t bytes, std::size_t alignment) noexcept override {
     // this assumes addr is both valid and allocated
 
-    if (addr < pool_base_ || addr >= pool_end_) {
+    if (addr < resource_base_ || addr >= pool_end_) {
       // if caller frees something outside the pool, ignore (we avoid throwing for performance)
       return;
     }
@@ -130,7 +154,7 @@ protected:
       const std::uintptr_t bud = buddy_of(addr, order);
 
       // buddies must also be within pool; if not, stop. (TODO: can this happen?)
-      if (bud < pool_base_ || bud >= pool_end_) {
+      if (bud < resource_base_ || bud >= pool_end_) {
         break;
       }
 
@@ -159,7 +183,7 @@ protected:
     //
     // TODO: permit overriding
 
-    if (addr < pool_base_ || addr >= pool_end_) {
+    if (addr < resource_base_ || addr >= pool_end_) {
       throw std::bad_alloc();  // we have no control over the address requested!
     }
 
@@ -170,7 +194,7 @@ protected:
     }
 
     const std::uintptr_t block_size = (std::uintptr_t(1) << order);
-    if ( ((addr - pool_base_) & (block_size - 1)) != 0 ) {
+    if ( ((addr - resource_base_) & (block_size - 1)) != 0 ) {
       throw std::bad_alloc();  // address isn't aligned to the requested size
     }
 
@@ -186,14 +210,16 @@ private:
   mem_config cfg_;
   buddy_config bcfg_;
 
+  std::uintptr_t resource_base_{0};
   std::uintptr_t pool_base_{0};
   std::uintptr_t pool_end_{0};
   std::size_t    pool_size_{0};
 
   int min_order_{0};
   int max_order_{0};
+  std::size_t orders_{0};  // max-min, i.e. all valid orders. used for freelist
 
-  std::vector<FreeNode*> free_;
+  FreeNode** free_{nullptr};
 
   static std::uintptr_t align_up(std::uintptr_t p, std::size_t alignment) noexcept {
     const std::uintptr_t a = static_cast<std::uintptr_t>(alignment);
@@ -217,8 +243,8 @@ private:
   }
 
   std::uintptr_t buddy_of(std::uintptr_t addr, int order) const noexcept {
-    const std::uintptr_t off = addr - pool_base_;
-    return pool_base_ + (off ^ (std::uintptr_t(1) << order));
+    const std::uintptr_t off = addr - resource_base_;
+    return resource_base_ + (off ^ (std::uintptr_t(1) << order));
   }
 
   std::size_t idx(int order) const noexcept {
